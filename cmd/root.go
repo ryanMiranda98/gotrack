@@ -8,21 +8,15 @@ import (
 	"os"
 	"path/filepath"
 
+	. "github.com/ryanMiranda98/gotrack/internal/errors"
 	"github.com/ryanMiranda98/gotrack/internal/object"
-	"github.com/ryanMiranda98/gotrack/internal/tree"
 	"github.com/ryanMiranda98/gotrack/utils"
 	"github.com/spf13/cobra"
 )
 
-var ErrInvalidArguments = errors.New("invalid argument(s) provided.")
-var ErrDirNotExists = errors.New("directory does not exist.")
-var ErrFileNotExists = errors.New("file does not exist.")
-var ErrDirInitialized = errors.New("directory has already been initialized.")
-var ErrFileNotProvided = errors.New("please provide a file in the arguments")
-
 var (
-	hashObjectWriteToFileFlag bool
-	listTreeRecursivelyFlag bool
+	writeHashObjectFlag bool
+	recursiveLsTreeFlag   bool
 )
 
 var rootCmd = &cobra.Command{
@@ -37,8 +31,8 @@ func init() {
 	rootCmd.AddCommand(writeTreeCmd)
 	rootCmd.AddCommand(lsTreeCmd)
 
-	hashObjectCmd.Flags().BoolVarP(&hashObjectWriteToFileFlag, "write", "w", false, "compute hash from content and write to file.")
-	lsTreeCmd.Flags().BoolVarP(&listTreeRecursivelyFlag, "recursive", "r", false, "list tree content recursively.")
+	hashObjectCmd.Flags().BoolVarP(&writeHashObjectFlag, "write", "w", false, "compute hash from content and write to file.")
+	lsTreeCmd.Flags().BoolVarP(&recursiveLsTreeFlag, "recursive", "r", false, "list tree content recursively.")
 }
 
 func Execute() error {
@@ -71,12 +65,12 @@ var initCmd = &cobra.Command{
 			if dirEntries, err := os.ReadDir(dir); err != nil {
 				return err
 			} else if len(dirEntries) != 0 {
-				return ErrDirInitialized
+				return ErrDirAlreadyInitialized
 			} else {
 				return utils.InitDir(dir)
 			}
 		} else {
-			if err := utils.CreateDirIfNotExists(dir); err != nil {
+			if err := utils.CreateDir(dir); err != nil {
 				return err
 			}
 			return utils.InitDir(dir)
@@ -86,31 +80,16 @@ var initCmd = &cobra.Command{
 
 var hashObjectCmd = &cobra.Command{
 	Use:   "hash-object",
-	Short: "Creates a gotrack (git) object.",
+	Short: "Creates a gotrack blob.",
 	RunE: func(c *cobra.Command, args []string) error {
 		if len(args) < 1 {
-			return ErrFileNotProvided
+			return ErrFileArgNotProvided
 		}
-		if hashObjectWriteToFileFlag {
-			hash, _, err := object.CreateAndStoreBlob(args[0])
-			if err != nil {
-				return err
-			}
-			fmt.Printf("%s\n", hash)
-		} else {
-			filePath := filepath.Clean(args[0])
-			content, err := os.ReadFile(filePath)
-			if err != nil {
-				return err
-			}
-
-			gotrackObject := object.CreateNewObject("blob", len(content), content)
-			hash, err := gotrackObject.GenerateSHA1Hash()
-			if err != nil {
-				return err
-			}
-			fmt.Printf("%s\n", hash)
+		hash, _, err := object.CreateAndStoreBlob(args[0], writeHashObjectFlag)
+		if err != nil {
+			return err
 		}
+		fmt.Printf("%s\n", hash)
 
 		return nil
 	},
@@ -118,21 +97,15 @@ var hashObjectCmd = &cobra.Command{
 
 var catFileCmd = &cobra.Command{
 	Use:   "cat-file <object_type> <object_hash>",
-	Short: "Read the contents of a gotrack object.",
+	Short: "Read the contents of a gotrack blob.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) < 2 {
 			return ErrInvalidArguments
 		}
 
-		// objectType := args[0]
 		hash := args[1]
 
-		cwd, err := os.Getwd()
-		if err != nil {
-			return err
-		}
-
-		gotrackDir, err := utils.GetGoTrackDir(cwd)
+		gotrackDir, err := utils.GetGoTrackDir()
 		if err != nil {
 			return err
 		}
@@ -163,7 +136,7 @@ var catFileCmd = &cobra.Command{
 			return err
 		}
 
-		var gotrackObject object.Object
+		var gotrackObject object.Blob
 		gotrackObject.Deserialize(buf.String())
 		fmt.Printf("%s\n", string(gotrackObject.Content))
 		return nil
@@ -178,11 +151,7 @@ var lsTreeCmd = &cobra.Command{
 			return ErrInvalidArguments
 		}
 		treeHash := args[0]
-		cwd, err := os.Getwd()
-		if err != nil {
-			return err
-		}
-		tree.ListTree(treeHash, cwd, "", listTreeRecursivelyFlag)
+		object.ListTree(treeHash, "", recursiveLsTreeFlag)
 		return nil
 	},
 }
@@ -192,11 +161,7 @@ var writeTreeCmd = &cobra.Command{
 	Use:   "write-tree",
 	Short: "Creates a tree object from the staging area.",
 	RunE: func(c *cobra.Command, args []string) error {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return err
-		}
-		gotrackDir, err := utils.GetGoTrackDir(cwd)
+		vcsDir, err := utils.GetGoTrackDir()
 		if err != nil {
 			return err
 		}
@@ -204,10 +169,11 @@ var writeTreeCmd = &cobra.Command{
 		// TODO: read more paths from .gotrackignore if exists
 		// Add regexp for paths like bin/*
 		pathsToIgnore := []string{
-			gotrackDir,
+			vcsDir,
 		}
 
-		hash, _, err := tree.GenerateTreeEntries(cwd, &pathsToIgnore)
+		cwd := utils.GetParentDir(vcsDir)
+		hash, _, err := object.GenerateTreeEntries(cwd, &pathsToIgnore)
 		if err != nil {
 			return err
 		}

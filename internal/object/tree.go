@@ -1,10 +1,8 @@
-package tree
+package object
 
 import (
 	"bytes"
 	"compress/zlib"
-	"crypto/sha1"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,8 +10,18 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ryanMiranda98/gotrack/internal/object"
+	. "github.com/ryanMiranda98/gotrack/internal/errors"
 	"github.com/ryanMiranda98/gotrack/utils"
+)
+
+// Tree
+// tree <size>
+// <mode> <name>\x00<hash>
+
+const (
+	MODE_BLOB    = "100644"
+	MODE_TREE    = "040000"
+	MODE_SYMLINK = "120000"
 )
 
 type Tree struct {
@@ -49,7 +57,7 @@ func (t *Tree) Serialize() string {
 func (t *Tree) Deserialize(data string) error {
 	entries := strings.Split(data, "\n")
 	if len(entries) < 2 {
-		return errors.New("invalid tree data")
+		return ErrInvalidArguments
 	}
 
 	var treeEntries []TreeEntry
@@ -57,12 +65,12 @@ func (t *Tree) Deserialize(data string) error {
 	for _, entry := range entries {
 		mode, split, found := strings.Cut(entry, " ")
 		if !found {
-			return errors.New("invalid data provided.")
+			return ErrInvalidData
 		}
 
 		name, hash, found := strings.Cut(split, "\x00")
 		if !found {
-			return errors.New("invalid data provided.")
+			return ErrInvalidData
 		}
 
 		treeEntries = append(treeEntries, TreeEntry{
@@ -77,40 +85,26 @@ func (t *Tree) Deserialize(data string) error {
 	return nil
 }
 
-func (t *Tree) GenerateSHA1Hash() (string, error) {
-	hasher := sha1.New()
-	_, err := hasher.Write([]byte(t.Serialize()))
-	if err != nil {
-		return "", err
-	}
-
-	return fmt.Sprintf("%x", hasher.Sum(nil)), nil
-}
-
 func CreateAndStoreTree(treeEntries *[]TreeEntry) (string, int, error) {
 	tree := CreateNewTree(treeEntries)
 	for _, entries := range *treeEntries {
 		tree.Size += entries.Size
 	}
-	hash, err := tree.GenerateSHA1Hash()
+	hash, err := utils.GenerateSHA1Hash(tree.Serialize())
 	if err != nil {
 		return "", -1, err
 	}
+
 	dir := hash[0:2]
 	filename := hash[2:]
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", -1, err
-	}
-
-	vcsDir, err := utils.GetGoTrackDir(cwd)
+	vcsDir, err := utils.GetGoTrackDir()
 	if err != nil {
 		return "", -1, err
 	}
 
 	objectsFilePath := filepath.Join(vcsDir, "objects", dir)
-	err = utils.CreateDirIfNotExists(objectsFilePath)
+	err = utils.CreateDir(objectsFilePath)
 	if err != nil {
 		return "", -1, err
 	}
@@ -133,7 +127,6 @@ func CreateAndStoreTree(treeEntries *[]TreeEntry) (string, int, error) {
 }
 
 func GenerateTreeEntries(cwd string, pathsToIgnore *[]string) (string, int, error) {
-	// Read current dir
 	dirEntries, err := os.ReadDir(cwd)
 	if err != nil {
 		return "", -1, err
@@ -152,14 +145,14 @@ func GenerateTreeEntries(cwd string, pathsToIgnore *[]string) (string, int, erro
 				if err != nil {
 					return "", -1, err
 				}
-				mode = "040000"
+				mode = MODE_TREE
 			} else {
 				// For each file/blob, compute hash, store object and return hash and size to tree
-				hash, size, err = object.CreateAndStoreBlob(currentFilePath)
+				hash, size, err = CreateAndStoreBlob(currentFilePath, true)
 				if err != nil {
 					return "", -1, err
 				}
-				mode = "100644"
+				mode = MODE_BLOB
 			}
 
 			fi, err := os.Stat(currentFilePath)
@@ -167,7 +160,7 @@ func GenerateTreeEntries(cwd string, pathsToIgnore *[]string) (string, int, erro
 				return "", -1, err
 			}
 			if fi.Mode() == os.ModeSymlink {
-				mode = "120000"
+				mode = MODE_SYMLINK
 			}
 			treeEntries = append(treeEntries, TreeEntry{
 				Hash: hash,
@@ -184,18 +177,14 @@ func GenerateTreeEntries(cwd string, pathsToIgnore *[]string) (string, int, erro
 	})
 
 	hash, _, err := CreateAndStoreTree(&treeEntries)
-	if err != nil {
-		return "", -1, err
-	}
-
 	return hash, -1, err
 }
 
-func ListTree(hash, cwd, parentDir string, recursive bool) error {
+func ListTree(hash, parentDir string, recursive bool) error {
 	dir := hash[0:2]
 	filename := hash[2:]
 
-	vcsDir, err := utils.GetGoTrackDir(cwd)
+	vcsDir, err := utils.GetGoTrackDir()
 	if err != nil {
 		return err
 	}
@@ -203,7 +192,7 @@ func ListTree(hash, cwd, parentDir string, recursive bool) error {
 	file, err := os.OpenFile(treePath, os.O_RDONLY, 0644)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return errors.New("file does not exist.")
+			return ErrFileNotExists
 		}
 	}
 	defer file.Close()
@@ -227,7 +216,7 @@ func ListTree(hash, cwd, parentDir string, recursive bool) error {
 	for _, entry := range tree.TreeEntries {
 		var entryType string
 		switch entry.Mode {
-		case "040000":
+		case MODE_TREE:
 			if recursive {
 				var name string
 				if parentDir == "" {
@@ -235,14 +224,13 @@ func ListTree(hash, cwd, parentDir string, recursive bool) error {
 				} else {
 					name = filepath.Join(parentDir, entry.Name)
 				}
-				ListTree(entry.Hash, cwd, name, true)
+				ListTree(entry.Hash, name, true)
 				continue
 			} else {
 				entryType = "tree"
 			}
-		case "100644":
+		case MODE_BLOB:
 			entryType = "blob"
-			// case 120000
 		}
 
 		var name string

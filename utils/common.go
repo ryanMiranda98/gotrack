@@ -1,41 +1,47 @@
 package utils
 
 import (
+	"crypto/sha1"
 	"fmt"
+	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
+
+	. "github.com/ryanMiranda98/gotrack/internal/errors"
 )
 
-func CreateDirIfNotExists(dirPath string) error {
-	return os.MkdirAll(dirPath, 0777)
+func CreateDir(dirPath string) error {
+	err := os.MkdirAll(dirPath, fs.ModePerm)
+	if err != nil {
+		log.Println(err)
+		return ErrDirCreationFailed
+	}
+
+	return nil
 }
 
 func InitDir(dirPath string) error {
-	// Create objects sub-directory
-	err := os.Mkdir(filepath.Join(dirPath, "objects"), 0777)
-	if err != nil {
-		return err
+	dirs := []string{
+		"objects",
+		"refs",
+		filepath.Join("refs", "heads"),
+		filepath.Join("refs", "tags"),
 	}
 
-	// Create refs + refs/heads & refs/tags sub-directory
-	err = os.Mkdir(filepath.Join(dirPath, "refs"), 0777)
-	if err != nil {
-		return err
-	}
-	err = os.Mkdir(filepath.Join(dirPath, "refs", "heads"), 0777)
-	if err != nil {
-		return err
-	}
-	err = os.Mkdir(filepath.Join(dirPath, "refs", "tags"), 0777)
-	if err != nil {
-		return err
+	for _, dir := range dirs {
+		err := CreateDir(filepath.Join(dirPath, dir))
+		if err != nil {
+			return err
+		}
 	}
 
 	// Create HEAD file -> ref: refs/heads/master
-	err = os.WriteFile(filepath.Join(dirPath, "HEAD"), []byte("ref: refs/heads/master\n"), 0777)
+	path := filepath.Join(dirPath, "HEAD")
+	err := os.WriteFile(path, []byte("ref: refs/heads/master\n"), fs.ModePerm)
 	if err != nil {
-		return err
+		return ErrFileNotWritten
 	}
 
 	// Create config file:
@@ -43,18 +49,28 @@ func InitDir(dirPath string) error {
 	// repositoryformatversion = 0
 	// filemode = false
 	// bare = false
-	err = os.WriteFile(filepath.Join(dirPath, "config"), []byte("[core]\nrepositoryformatversion = 0\nfilemode = false\nbare = false"), 0777)
+	path = filepath.Join(dirPath, "config")
+	err = os.WriteFile(path, []byte("[core]\nrepositoryformatversion = 0\nfilemode = false\nbare = false"), fs.ModePerm)
 	if err != nil {
-		return err
+		return ErrFileNotWritten
 	}
 
 	return nil
 }
 
-func GetGoTrackDir(cwd string) (string, error) {
-	dirEntries, err := os.ReadDir(cwd)
+func GetGoTrackDir() (string, error) {
+	cwd, err := os.Getwd()
 	if err != nil {
 		return "", err
+	}
+
+	return RecurseGoTrackWd(cwd)
+}
+
+func RecurseGoTrackWd(cwd string) (string, error) {
+	dirEntries, err := os.ReadDir(cwd)
+	if err != nil {
+		return "", ErrReadDir
 	}
 
 	var gotrackPath string
@@ -69,8 +85,22 @@ func GetGoTrackDir(cwd string) (string, error) {
 	if gotrackPath == "" {
 		parentDir := filepath.Join(cwd, "..")
 		fmt.Println("couldn't find path, moving to", parentDir)
-		return GetGoTrackDir(parentDir)
+		return RecurseGoTrackWd(parentDir)
 	}
 
-	return "", nil
+	return gotrackPath, nil
+}
+
+func GetParentDir(cwd string) string {
+	return filepath.Dir(cwd)
+}
+
+func GenerateSHA1Hash(data string) (string, error) {
+	hasher := sha1.New()
+	_, err := hasher.Write([]byte(data))
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("%x", hasher.Sum(nil)), nil
 }
